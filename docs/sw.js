@@ -1,5 +1,5 @@
 // Service worker : appli disponible hors connexion + réception du bouton « Partager » d'Android.
-const VERSION = "20261121115722";
+const VERSION = "20261121134536";
 const CACHE = "boite-" + VERSION;
 const COQUILLE = ["./", "index.html", "app.js", "style.css", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 const PARTAGE = "boite-partage";

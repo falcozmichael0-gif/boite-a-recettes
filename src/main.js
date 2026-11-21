@@ -436,7 +436,7 @@ async function lancerRetranscription() {
     location.hash = "#recette/" + id;
   } catch (e) {
     st.className = "statut err";
-    st.textContent = e instanceof ErreurRecette ? e.message : "Enregistrement impossible (" + (e.code || e.message) + ").";
+    st.textContent = e instanceof ErreurRecette ? e.message : "Enregistrement impossible : " + (e.message || e.code) + (e.name ? ` (${e.name})` : "");
   } finally {
     const go = $("#go"); if (go) go.disabled = false;
     const stop = $("#stop"); if (stop) stop.hidden = true;

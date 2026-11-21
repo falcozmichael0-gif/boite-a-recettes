@@ -1,6 +1,7 @@
 // Retranscription d'une publication (texte et/ou captures) en recette structurée, via l'API Claude.
 // La clé API appartient à l'utilisateur et reste sur son appareil : l'appel part directement du navigateur.
 import Anthropic from "@anthropic-ai/sdk";
+import { chargerImage, ErreurImage } from "./photo.js";
 
 export const CATEGORIES = ["Apéritifs", "Entrées", "Plats", "Accompagnements", "Soupes", "Desserts", "Pâtisserie", "Pains & viennoiseries", "Petit-déjeuner", "Sauces & bases", "Boissons"];
 
@@ -58,11 +59,12 @@ ${texte ? `Texte de la publication :\n"""\n${texte.slice(0, 30000)}\n"""` : ""}`
 
 // Réduit une image à 1568 px de côté au plus (taille utile pour Claude) et la renvoie en JPEG base64.
 export async function imageEnBase64(fichier) {
-  const bitmap = await createImageBitmap(fichier);
-  const ratio = Math.min(1, 1568 / Math.max(bitmap.width, bitmap.height));
+  const bitmap = await chargerImage(fichier);
+  const l = bitmap.naturalWidth || bitmap.width, h = bitmap.naturalHeight || bitmap.height;
+  const ratio = Math.min(1, 1568 / Math.max(l, h));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * ratio);
-  canvas.height = Math.round(bitmap.height * ratio);
+  canvas.width = Math.round(l * ratio);
+  canvas.height = Math.round(h * ratio);
   canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.85));
   const buf = new Uint8Array(await blob.arrayBuffer());
@@ -96,7 +98,10 @@ function messageErreur(e) {
 export async function retranscrire({ cle, modele, url, texte, images, signal }) {
   const m = MODELES[modele] || MODELES.precis;
   const contenu = [];
-  for (const img of images) contenu.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: await imageEnBase64(img) } });
+  for (const img of images) {
+    try { contenu.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: await imageEnBase64(img) } }); }
+    catch (e) { throw new ErreurRecette(e instanceof ErreurImage ? e.message : "Une image n'a pas pu être préparée. Essayez avec une autre capture."); }
+  }
   contenu.push({ type: "text", text: consigne(url, texte, images.length) });
 
   const params = {
