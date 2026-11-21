@@ -1,8 +1,18 @@
 // Photos des plats : compressées dans le navigateur puis rangées dans Firestore (pas besoin de Firebase Storage, qui est payant).
 
-// Ouvre une image : d'abord par la voie rapide, sinon par un <img> classique (qui lit plus de formats sur certains téléphones).
+// Copie en mémoire un fichier choisi dans la Galerie. Sur Android, le fichier reste sinon lié à la Galerie
+// et peut devenir illisible plus tard (par exemple quand le sélecteur est remis à zéro).
+export async function copierFichier(f) {
+  try { return new File([await f.arrayBuffer()], f.name || "image.jpg", { type: f.type || "image/jpeg" }); }
+  catch { return f; }
+}
+
+// Ouvre une image : voie rapide, puis en taille réduite (photos de 50 Mpx que le téléphone refuse d'ouvrir en entier),
+// puis par un <img> classique (qui lit plus de formats sur certains téléphones).
 export async function chargerImage(fichier) {
-  try { return await createImageBitmap(fichier, { imageOrientation: "from-image" }); } catch {}
+  let detail = "";
+  try { return await createImageBitmap(fichier, { imageOrientation: "from-image" }); } catch (e) { detail = e.name; }
+  try { return await createImageBitmap(fichier, { imageOrientation: "from-image", resizeWidth: 2400, resizeQuality: "high" }); } catch {}
   const url = URL.createObjectURL(fichier);
   try {
     const img = new Image();
@@ -13,7 +23,7 @@ export async function chargerImage(fichier) {
     const heic = /hei[cf]/i.test(fichier.type) || /\.hei[cf]$/i.test(fichier.name || "");
     throw new ErreurImage(heic
       ? "Cette photo est au format HEIC, que le téléphone ne sait pas ouvrir ici. Faites plutôt une capture d'écran de la photo, ou réglez l'appareil photo en JPEG."
-      : "Une image n'a pas pu être lue (fichier abîmé ou format non pris en charge). Essayez avec une autre capture.");
+      : `Une image n'a pas pu être lue (fichier abîmé ou format non pris en charge). Essayez avec une autre image.${detail ? ` [${detail}, ${Math.round((fichier.size || 0) / 1e5) / 10} Mo, ${fichier.type || "type inconnu"}]` : ""}`);
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }

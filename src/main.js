@@ -3,7 +3,7 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRe
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { firebaseConfig } from "./config.js";
 import { CATEGORIES, MODELES, retranscrire, testerCle, ErreurRecette } from "./claude.js";
-import { reduire, vignette, decouper } from "./photo.js";
+import { reduire, vignette, decouper, copierFichier } from "./photo.js";
 import { recadrer } from "./recadrage.js";
 import { lireFrigo, classer, sansPrecision } from "./frigo.js";
 import { ORDRE_RAYONS, AUTRES, ajouterArticle, lireSaisie, libelleQte, texteListe, arrondi, nombre } from "./courses.js";
@@ -252,7 +252,8 @@ function vueRecette(id) {
   desabonnerPhoto?.(); desabonnerPhoto = null;
   if (r.vignette) desabonnerPhoto = onSnapshot(docPhoto(id), s => { const img = $("#photo"); if (img && s.exists() && s.data().image) img.src = s.data().image; }, () => {});
   $("#e-photo").onchange = async e => {
-    let f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    let f = e.target.files[0]; if (!f) return;
+    f = await copierFichier(f); e.target.value = "";
     const zone = await recadrer(f); if (!zone) return;
     try { f = await decouper(f, zone); } catch (err) { toast(err.message); return; }
     toast("Enregistrement de la photo…");
@@ -409,10 +410,11 @@ function vueAjouter() {
   majVignettes();
   $("#texte").oninput = e => { brouillon.texte = e.target.value; };
   $("#url").oninput = e => { brouillon.url = e.target.value; };
-  $("#fichiers").onchange = e => { ajouterImages(e.target.files); e.target.value = ""; };
+  $("#fichiers").onchange = async e => { const l = await Promise.all([...e.target.files].map(copierFichier)); e.target.value = ""; ajouterImages(l); };
   $("#vignettes").onclick = e => { const b = e.target.closest("[data-rm]"); if (b) { brouillon.images.splice(Number(b.dataset.rm), 1); majVignettes(); } };
   $("#photo-plat").onchange = async e => {
-    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    let f = e.target.files[0]; if (!f) return;
+    f = await copierFichier(f); e.target.value = "";
     const zone = await recadrer(f); if (!zone) return;
     try { brouillon.photo = await decouper(f, zone); } catch (err) { toast(err.message); return; }
     vueAjouter();
