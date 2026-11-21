@@ -8,6 +8,8 @@ import { lireFrigo, classer, sansPrecision } from "./frigo.js";
 import { ORDRE_RAYONS, AUTRES, ajouterArticle, lireSaisie, libelleQte, texteListe, arrondi, nombre } from "./courses.js";
 
 const $ = s => document.querySelector(s);
+const VERSION = __VERSION_APPLI__;   // remplacé à la construction (build.mjs)
+const dateVersion = v => new Date(v.date).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 const app = $("#app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const lire = k => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -535,6 +537,12 @@ function vueReglages() {
       <p>Connecté : <b>${esc(utilisateur.email || utilisateur.displayName || "")}</b></p>
       <button class="btn danger" id="deco">Se déconnecter</button>
     </div>
+    <div class="carton">
+      <h2 class="sec">Version</h2>
+      <p>Version <b>${esc(VERSION.numero)}</b> <span class="sous">du ${dateVersion(VERSION)}</span></p>
+      <div class="row"><button class="btn discret" id="maj">🔄 Rechercher une mise à jour</button></div>
+      <p class="statut" id="maj-statut"></p>
+    </div>
   </section>`;
   const st = $("#cle-statut");
   $("#cle-ok").onclick = async () => {
@@ -546,6 +554,15 @@ function vueReglages() {
     st.className = "statut " + (r.ok ? "ok" : "err"); st.textContent = r.ok ? "Clé enregistrée sur cet appareil. ✔" : r.message;
   };
   $("#cle-suppr").onclick = () => { ecrire("cle-api", null); $("#cle").value = ""; st.className = "statut"; st.textContent = "Clé effacée de cet appareil."; };
+  $("#maj").onclick = async () => {
+    const st = $("#maj-statut");
+    st.className = "statut"; st.textContent = "Vérification…";
+    const enLigne = await versionEnLigne();
+    if (!enLigne) { st.className = "statut err"; st.textContent = "Impossible de vérifier : pas de connexion à Internet ?"; return; }
+    if (enLigne.build === VERSION.build) { st.className = "statut ok"; st.textContent = "✔ Vous avez la dernière version."; return; }
+    st.textContent = `Nouvelle version ${enLigne.numero} trouvée, installation…`;
+    await installerMiseAJour();
+  };
   $("#modele").onchange = e => { ecrire("modele", e.target.value); toast("Réglage enregistré."); };
   $("#import").onchange = e => importer(e.target.files[0]);
   $("#export-json").onclick = () => telecharger("mes-recettes.json", JSON.stringify(recettes, null, 2), "application/json");
@@ -588,9 +605,34 @@ function csv() {
   return "﻿" + [tete.map(cell).join(";"), ...lignes].join("\r\n");   // point-virgule + BOM : s'ouvre directement dans Excel français
 }
 
+/* ---------- mises à jour ---------- */
+async function versionEnLigne() {
+  try { const r = await fetch("version.json", { cache: "no-store" }); return r.ok ? await r.json() : null; } catch { return null; }
+}
+// Vide le cache de l'appli (pas les données) et recharge : la nouvelle version est alors téléchargée.
+async function installerMiseAJour() {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    await reg?.update().catch(() => {});
+    for (const k of await caches.keys()) if (k.startsWith("boite-") && k !== "boite-partage") await caches.delete(k);
+  } catch {}
+  location.reload();
+}
+// Au démarrage : si une version plus récente est en ligne, on le signale.
+async function signalerMiseAJour() {
+  const v = await versionEnLigne();
+  if (!v || v.build === VERSION.build) return;
+  const t = document.createElement("div");
+  t.className = "toast"; t.setAttribute("role", "status");
+  t.innerHTML = `Nouvelle version ${esc(v.numero)} disponible <button class="btn plein petit" style="margin:0 0 0 10px">Mettre à jour</button>`;
+  t.querySelector("button").onclick = installerMiseAJour;
+  document.body.append(t);
+}
+
 /* ---------- démarrage ---------- */
 async function demarrer() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  setTimeout(signalerMiseAJour, 3000);
   await recupererPartage();
   if (!firebaseConfig) return vueSansConfig();
   const fb = initializeApp(firebaseConfig);

@@ -7,4 +7,4 @@ const factice = { name: "factice", setup(b) {
   b.onResolve({ filter: /^firebase\// }, () => ({ path: process.cwd() + "/test/firebase-factice.js" }));
   b.onResolve({ filter: /\.\/config\.js$/ }, () => ({ path: process.cwd() + "/test/config-test.js" }));
 } };
-await build({ entryPoints: ["src/main.js"], bundle: true, format: "esm", outfile: "test/site/app.js", plugins: [factice] });
+await build({ entryPoints: ["src/main.js"], bundle: true, format: "esm", outfile: "test/site/app.js", plugins: [factice], define: { __VERSION_APPLI__: JSON.stringify({ numero: "test", build: "0", date: new Date().toISOString() }) } });

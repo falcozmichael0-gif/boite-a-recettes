@@ -18,6 +18,7 @@ self.addEventListener("activate", e => {
 self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;            // Firebase, Claude, polices : réseau direct
+  if (url.pathname.endsWith("/version.json")) return;   // toujours la version en ligne, jamais le cache
 
   // Partage depuis une autre appli : on range le contenu puis on ouvre l'écran « Ajouter »
   if (e.request.method === "POST" && url.pathname.endsWith("/partage")) {
