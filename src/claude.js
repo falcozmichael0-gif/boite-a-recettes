@@ -14,7 +14,7 @@ const nombreOuNul = { anyOf: [{ type: "number" }, { type: "null" }] };
 const SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["estRecette", "raison", "titre", "categorie", "tags", "portions", "tempsPreparation", "tempsCuisson", "difficulte", "ingredients", "etapes", "astuces"],
+  required: ["estRecette", "raison", "titre", "categorie", "tags", "portions", "tempsPreparation", "tempsCuisson", "difficulte", "ingredients", "etapes", "astuces", "photo"],
   properties: {
     estRecette: { type: "boolean" },
     raison: { type: "string" },
@@ -36,6 +36,14 @@ const SCHEMA = {
     },
     etapes: { type: "array", items: { type: "string" } },
     astuces: { type: "string" },
+    // où se trouve la photo du plat sur les captures (pour la découper automatiquement)
+    photo: {
+      anyOf: [{ type: "null" }, {
+        type: "object", additionalProperties: false,
+        required: ["capture", "gauche", "haut", "droite", "bas"],
+        properties: { capture: { type: "integer" }, gauche: { type: "number" }, haut: { type: "number" }, droite: { type: "number" }, bas: { type: "number" } },
+      }],
+    },
   },
 };
 
@@ -51,6 +59,7 @@ Extrais la recette en respectant le schéma JSON demandé :
 - Réécris les étapes clairement, une action principale par étape, sans emojis ni hashtags. N'invente pas d'ingrédient absent.
 - « tags » : 3 à 5 étiquettes courtes en minuscules (régime, méthode de cuisson, occasion, ingrédient vedette).
 - « astuces » : conseils utiles de la publication, et signale ce qui manque ou est illisible ; sinon chaîne vide.
+- « photo » : si une capture montre une photo du plat terminé, donne le cadre de cette photo seule (sans barres, textes, boutons ni bordures de l'appli) : « capture » = numéro de la capture (1 pour la première), et « gauche », « haut », « droite », « bas » = bords du cadre en fractions de la largeur et de la hauteur de cette capture (0 à 1, 0 = bord gauche ou haut). Choisis la photo la plus grande et la plus appétissante. Sinon null.
 - Si le contenu n'est pas une recette, mets estRecette à false, explique pourquoi dans « raison », et remplis les autres champs avec des valeurs vides. Sinon « raison » est une chaîne vide.
 
 Lien de la publication : ${url || "(non fourni)"}
@@ -136,7 +145,17 @@ export async function retranscrire({ cle, modele, url, texte, images, signal }) 
     ingredients: (r.ingredients || []).filter(i => i?.nom).map(i => ({ quantite: i.quantite == null ? null : Number(i.quantite), unite: String(i.unite || ""), nom: String(i.nom) })),
     etapes: (r.etapes || []).map(String),
     astuces: String(r.astuces || ""),
+    photo: zonePhoto(r.photo, images.length),
   };
+}
+
+// Cadre de la photo du plat renvoyé par Claude → zone {capture (index 0), x, y, w, h} en fractions, ou null si incohérent.
+function zonePhoto(p, nbImages) {
+  if (!p || !nbImages) return null;
+  const i = Math.round(Number(p.capture)) - 1;
+  const g = Math.max(0, Number(p.gauche)), h = Math.max(0, Number(p.haut)), d = Math.min(1, Number(p.droite)), b = Math.min(1, Number(p.bas));
+  if (!(i >= 0 && i < nbImages) || ![g, h, d, b].every(Number.isFinite) || d - g < 0.1 || b - h < 0.08) return null;
+  return { capture: i, x: g, y: h, w: d - g, h: b - h };
 }
 
 // Petit appel pour vérifier une clé depuis les réglages.

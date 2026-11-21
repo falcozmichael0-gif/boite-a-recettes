@@ -52,3 +52,18 @@ export async function vignette(fichier, cote = 240) {
   g.drawImage(bitmap, (largeur(bitmap) - s) / 2, (hauteur(bitmap) - s) / 2, s, s, 0, 0, cote, cote);
   return c.toDataURL("image/jpeg", 0.7);
 }
+
+// Découpe la zone choisie (fractions 0–1) dans l'image d'origine, en pleine qualité, et la renvoie en JPEG.
+export async function decouper(fichier, z) {
+  const b = await chargerImage(fichier);
+  const L = largeur(b), H = hauteur(b);
+  const sx = Math.round(z.x * L), sy = Math.round(z.y * H), sw = Math.round(z.w * L), sh = Math.round(z.h * H);
+  const ratio = Math.min(1, 2000 / Math.max(sw, sh));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(sw * ratio)); c.height = Math.max(1, Math.round(sh * ratio));
+  const g = c.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+  g.drawImage(b, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  const blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.9));
+  return new File([blob], "photo-plat.jpg", { type: "image/jpeg" });
+}

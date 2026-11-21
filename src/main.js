@@ -3,7 +3,8 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRe
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { firebaseConfig } from "./config.js";
 import { CATEGORIES, MODELES, retranscrire, testerCle, ErreurRecette } from "./claude.js";
-import { reduire, vignette } from "./photo.js";
+import { reduire, vignette, decouper } from "./photo.js";
+import { recadrer } from "./recadrage.js";
 import { lireFrigo, classer, sansPrecision } from "./frigo.js";
 import { ORDRE_RAYONS, AUTRES, ajouterArticle, lireSaisie, libelleQte, texteListe, arrondi, nombre } from "./courses.js";
 
@@ -239,7 +240,7 @@ function vueRecette(id) {
       <div class="field"><label for="e-tags">Étiquettes <span class="hint">(séparées par des virgules)</span></label><input type="text" id="e-tags" value="${esc((r.tags || []).join(", "))}"></div>
       <div class="row">
         <button class="btn" id="e-enreg">Enregistrer</button>
-        ${r.vignette ? `<button class="btn discret" id="e-sansphoto">Retirer la photo</button>` : ""}
+        ${r.vignette ? `<button class="btn discret" id="e-recadrer">✂️ Recadrer la photo</button><button class="btn discret" id="e-sansphoto">Retirer la photo</button>` : ""}
         <button class="btn discret" id="e-fav">${r.favori ? "★ Retirer des favoris" : "☆ Favori"}</button>
         <button class="btn danger" id="e-suppr">Supprimer</button>
       </div>
@@ -251,9 +252,18 @@ function vueRecette(id) {
   desabonnerPhoto?.(); desabonnerPhoto = null;
   if (r.vignette) desabonnerPhoto = onSnapshot(docPhoto(id), s => { const img = $("#photo"); if (img && s.exists() && s.data().image) img.src = s.data().image; }, () => {});
   $("#e-photo").onchange = async e => {
-    const f = e.target.files[0]; if (!f) return;
+    let f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    const zone = await recadrer(f); if (!zone) return;
+    try { f = await decouper(f, zone); } catch (err) { toast(err.message); return; }
     toast("Enregistrement de la photo…");
     try { await enregistrerPhoto(id, f); toast("Photo enregistrée."); } catch (err) { toast("Photo non enregistrée : " + (err.code || err.message)); }
+  };
+  const btnRecadrer = $("#e-recadrer");
+  if (btnRecadrer) btnRecadrer.onclick = async () => {
+    const src = $("#photo")?.src; if (!src) return;
+    const actuelle = new File([await (await fetch(src)).blob()], "photo.jpg", { type: "image/jpeg" });
+    const zone = await recadrer(actuelle); if (!zone) return;
+    try { await enregistrerPhoto(id, await decouper(actuelle, zone)); toast("Photo recadrée."); } catch (err) { toast("Photo non enregistrée : " + (err.code || err.message)); }
   };
   const sansPhoto = $("#e-sansphoto");
   if (sansPhoto) sansPhoto.onclick = () => retirerPhoto(r).then(() => toast("Photo retirée."), err => toast("Erreur : " + err.code));
@@ -401,7 +411,12 @@ function vueAjouter() {
   $("#url").oninput = e => { brouillon.url = e.target.value; };
   $("#fichiers").onchange = e => { ajouterImages(e.target.files); e.target.value = ""; };
   $("#vignettes").onclick = e => { const b = e.target.closest("[data-rm]"); if (b) { brouillon.images.splice(Number(b.dataset.rm), 1); majVignettes(); } };
-  $("#photo-plat").onchange = e => { const f = e.target.files[0]; if (f) { brouillon.photo = f; vueAjouter(); } };
+  $("#photo-plat").onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    const zone = await recadrer(f); if (!zone) return;
+    try { brouillon.photo = await decouper(f, zone); } catch (err) { toast(err.message); return; }
+    vueAjouter();
+  };
   $("#stop").onclick = () => ctl?.abort();
   $("#go").onclick = lancerRetranscription;
 }
@@ -429,12 +444,18 @@ async function lancerRetranscription() {
   st.textContent = "Claude lit la publication… (10 à 40 secondes)";
   try {
     const res = await retranscrire({ cle: lire("cle-api"), modele: lire("modele") || "precis", url, texte, images, signal: ctl.signal });
-    const r = { ...res, sourceUrl: /^https?:\/\//i.test(url) ? url : "", plateforme: plateforme(url), texteOriginal: texte.slice(0, 6000), favori: false, ajouteLe: new Date().toISOString() };
+    const { photo: zoneAuto, ...recette } = res;
+    const r = { ...recette, sourceUrl: /^https?:\/\//i.test(url) ? url : "", plateforme: plateforme(url), texteOriginal: texte.slice(0, 6000), favori: false, ajouteLe: new Date().toISOString() };
     const id = await enregistrerRecette(r);
     recettes.push({ id, ...r });
-    if (brouillon.photo) await enregistrerPhoto(id, brouillon.photo).catch(() => toast("Recette enregistrée, mais pas la photo : réessayez depuis la fiche."));
+    let message = `« ${r.titre} » rangée dans ${r.categorie}.`;
+    if (brouillon.photo) await enregistrerPhoto(id, brouillon.photo).catch(() => { message = "Recette enregistrée, mais pas la photo : réessayez depuis la fiche."; });
+    else if (zoneAuto) {
+      // Claude a repéré la photo du plat sur une capture : on la découpe et on l'utilise (sinon la recette reste sans photo)
+      try { await enregistrerPhoto(id, await decouper(images[zoneAuto.capture], zoneAuto)); message = `« ${r.titre} » rangée dans ${r.categorie}, avec la photo extraite de la capture.`; } catch {}
+    }
     brouillon = { url: "", texte: "", images: [], photo: null };
-    toast(`« ${r.titre} » rangée dans ${r.categorie}.`);
+    toast(message);
     location.hash = "#recette/" + id;
   } catch (e) {
     st.className = "statut err";
