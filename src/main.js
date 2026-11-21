@@ -4,6 +4,7 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
 import { firebaseConfig } from "./config.js";
 import { CATEGORIES, MODELES, retranscrire, testerCle, ErreurRecette } from "./claude.js";
 import { reduire, vignette } from "./photo.js";
+import { lireFrigo, classer, sansPrecision } from "./frigo.js";
 import { ORDRE_RAYONS, AUTRES, ajouterArticle, lireSaisie, libelleQte, texteListe, arrondi, nombre } from "./courses.js";
 
 const $ = s => document.querySelector(s);
@@ -98,14 +99,14 @@ function majBadge() {
 /* ---------- routage ---------- */
 function route() {
   const [v, id] = (location.hash.slice(1) || "recettes").split("/");
-  return { v: ["recettes", "recette", "ajouter", "courses", "reglages"].includes(v) ? v : "recettes", id };
+  return { v: ["recettes", "recette", "frigo", "ajouter", "courses", "reglages"].includes(v) ? v : "recettes", id };
 }
 function afficher() {
   if (!utilisateur) return;
   const { v, id } = route();
   if (v !== "recette") { liberEcran(); desabonnerPhoto?.(); desabonnerPhoto = null; }
-  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.v === (v === "recette" ? "recettes" : v)));
-  ({ recettes: vueRecettes, recette: () => vueRecette(id), ajouter: vueAjouter, courses: vueCourses, reglages: vueReglages })[v]();
+  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.v === (v === "recette" || v === "frigo" ? "recettes" : v)));
+  ({ recettes: vueRecettes, recette: () => vueRecette(id), frigo: vueFrigo, ajouter: vueAjouter, courses: vueCourses, reglages: vueReglages })[v]();
   window.scrollTo(0, 0);
 }
 // Données arrivées : on met à jour seulement les parties qui en dépendent (sans effacer une saisie en cours).
@@ -117,6 +118,7 @@ function rafraichir() {
     if (!r || !recetteVue || recetteVue.id !== id || JSON.stringify(r) !== JSON.stringify(recetteVue)) vueRecette(id);
   }
   else if (v === "courses") majCourses();
+  else if (v === "frigo") majFrigo();
 }
 window.addEventListener("hashchange", afficher);
 
@@ -150,6 +152,7 @@ function vueSansConfig() {
 function vueRecettes() {
   app.innerHTML = `<section class="view">
     <div class="row between"><h1 class="titre">Mes recettes</h1><span class="sous" id="compte"></span></div>
+    <a class="btn discret frigo-lien" href="#frigo">🧊 Qu'est-ce que je peux cuisiner avec mon frigo ?</a>
     <div class="row">
       <input type="search" id="recherche" placeholder="🔍 Chercher un plat, un ingrédient…" aria-label="Rechercher" value="${esc(recherche)}" style="flex:1 1 220px">
       <select id="tri" aria-label="Trier" style="width:auto">
@@ -211,6 +214,7 @@ function vueRecette(id) {
     </div>
     <div class="row">
       <button class="btn plein" id="versCourses">🛒 Ajouter aux courses</button>
+      <button class="btn discret" id="partager">📤 Partager</button>
       <label class="btn discret fichier">📷 ${r.vignette ? "Changer la photo" : "Ajouter une photo"}<input type="file" id="e-photo" accept="image/*"></label>
       ${"wakeLock" in navigator ? `<button class="btn discret" id="ecran" aria-pressed="${veutEcran}">${veutEcran ? "☀️ Écran gardé allumé" : "☀️ Garder l'écran allumé"}</button>` : ""}
     </div>
@@ -255,6 +259,7 @@ function vueRecette(id) {
     const b = e.target.closest("[data-p]");
     if (b) { portionsVues = Math.max(1, (portionsVues || 1) + Number(b.dataset.p)); vueRecette(id); }
   };
+  $("#partager").onclick = () => partagerRecette(r, f);
   $("#versCourses").onclick = () => {
     let n = 0;
     for (const i of r.ingredients || []) { ajouterArticle(courses, { nom: i.nom, quantite: i.quantite == null ? null : Number(i.quantite) * f, unite: i.unite || "", de: r.titre }); n++; }
@@ -280,6 +285,81 @@ function vueRecette(id) {
     location.hash = "#recettes";
   };
 }
+// Envoie la recette mise en forme (avec la photo quand l'appareil le permet) par WhatsApp, SMS, e-mail…
+async function partagerRecette(r, f) {
+  const pers = r.portions ? (portionsVues || r.portions) : null;
+  const texte = [
+    r.titre.toUpperCase(),
+    [pers ? `${pers} pers.` : "", tempsTotal(r) ? `⏱ ${duree(tempsTotal(r))}` : "", r.difficulte].filter(Boolean).join(" · "),
+    "", "INGRÉDIENTS",
+    ...(r.ingredients || []).map(i => `- ${(qte(i, f) + " " + i.nom).trim()}`),
+    "", "ÉTAPES",
+    ...(r.etapes || []).map((e, n) => `${n + 1}. ${e}`),
+    ...(r.astuces ? ["", "Astuce : " + r.astuces] : []),
+    ...(r.sourceUrl ? ["", "Source : " + r.sourceUrl] : []),
+  ].join("\n");
+  const donnees = { title: r.titre, text: texte };
+  const img = $("#photo")?.src;
+  if (img?.startsWith("data:")) {
+    try {
+      const fichier = new File([await (await fetch(img)).blob()], "photo-plat.jpg", { type: "image/jpeg" });
+      if (navigator.canShare?.({ ...donnees, files: [fichier] })) donnees.files = [fichier];
+    } catch {}
+  }
+  if (navigator.share) {
+    try { await navigator.share(donnees); return; }
+    catch (e) { if (e.name === "AbortError") return; delete donnees.files; try { await navigator.share(donnees); return; } catch (e2) { if (e2.name === "AbortError") return; } }
+  }
+  try { await navigator.clipboard.writeText(texte); toast("Recette copiée : collez-la dans un message."); }
+  catch { toast("Partage impossible sur cet appareil."); }
+}
+
+/* ---------- vue : que cuisiner avec mon frigo ---------- */
+function vueFrigo() {
+  const placard = lire("frigo-placard") !== "non";
+  app.innerHTML = `<section class="view">
+    <a class="retour" href="#recettes">← Mes recettes</a>
+    <h1 class="titre">Mon frigo</h1>
+    <div class="carton">
+      <div class="field"><label for="frigo">Ce que j'ai sous la main <span class="hint">(séparé par des virgules)</span></label>
+        <textarea id="frigo" style="min-height:90px" placeholder="ex. poulet, crème, courgette, feta, pâtes">${esc(lire("frigo") || "")}</textarea></div>
+      <label class="coche-ligne"><input type="checkbox" id="placard" ${placard ? "checked" : ""}> J'ai les basiques du placard (sel, poivre, huile, sucre, farine, épices…)</label>
+      <div class="row"><button class="btn discret" id="frigo-vider">Effacer</button></div>
+    </div>
+    <div id="frigo-res" class="view"></div>
+  </section>`;
+  let minuterie;
+  $("#frigo").oninput = e => { clearTimeout(minuterie); minuterie = setTimeout(() => { ecrire("frigo", e.target.value); majFrigo(); }, 250); };
+  $("#placard").onchange = e => { ecrire("frigo-placard", e.target.checked ? "oui" : "non"); majFrigo(); };
+  $("#frigo-vider").onclick = () => { ecrire("frigo", ""); $("#frigo").value = ""; majFrigo(); };
+  $("#frigo-res").onclick = e => {
+    const b = e.target.closest("[data-manque]"); if (!b) return;
+    const x = derniersResultats.find(y => y.r.id === b.dataset.manque); if (!x) return;
+    for (const i of x.manquants) ajouterArticle(courses, { nom: i.nom, quantite: i.quantite == null ? null : Number(i.quantite), unite: i.unite || "", de: x.r.titre });
+    sauverCourses();
+    toast(`${x.manquants.length} article${x.manquants.length > 1 ? "s" : ""} ajouté${x.manquants.length > 1 ? "s" : ""} aux courses.`);
+  };
+  majFrigo();
+}
+let derniersResultats = [];
+function majFrigo() {
+  const zone = $("#frigo-res"); if (!zone) return;
+  const produits = lireFrigo($("#frigo").value);
+  if (!produits.length) { zone.innerHTML = `<div class="vide">Tapez quelques ingrédients : vos recettes s'affichent de la plus faisable à la moins faisable.</div>`; derniersResultats = []; return; }
+  derniersResultats = classer(recettes, produits, $("#placard").checked);
+  if (!derniersResultats.length) { zone.innerHTML = `<div class="vide">Aucune recette n'utilise ces ingrédients. Essayez d'en ajouter d'autres.</div>`; return; }
+  zone.innerHTML = derniersResultats.map(x => `
+    <div class="carte frigo-carte${x.r.vignette ? " avec-photo" : ""}">
+      <span class="txt">
+        <span class="row between"><span class="cat">${esc(x.r.categorie)}</span><span class="jauge" title="${x.trouves.length} sur ${x.total}"><i style="width:${Math.round(x.score * 100)}%"></i></span></span>
+        <a href="#recette/${esc(x.r.id)}"><b>${esc(x.r.titre)}</b></a>
+        <span class="meta">${x.manquants.length ? `Il manque : ${x.manquants.map(i => esc(sansPrecision(i.nom))).join(", ")}` : "✔ Vous avez tout !"}</span>
+        ${x.manquants.length ? `<button class="btn discret petit" data-manque="${esc(x.r.id)}">🛒 Ajouter ce qui manque aux courses</button>` : ""}
+      </span>
+      ${x.r.vignette ? `<img class="mini" src="${x.r.vignette}" alt="">` : ""}
+    </div>`).join("");
+}
+
 // Mode cuisine : l'écran ne se met pas en veille pendant qu'on suit la recette.
 async function bloquerEcran() {
   try { verrouEcran = await navigator.wakeLock.request("screen"); verrouEcran.addEventListener("release", () => { verrouEcran = null; }); }

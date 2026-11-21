@@ -156,3 +156,12 @@ img.mini{width:68px;height:68px;object-fit:cover;border-radius:4px;border:3px so
 .fichier{position:relative;display:inline-flex;align-items:center;justify-content:center;overflow:hidden}
 .fichier input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .lbl{font-weight:800;font-size:14px}
+
+/* frigo */
+.frigo-lien{align-self:flex-start;text-decoration:none;color:var(--ink);display:inline-flex;align-items:center}
+.coche-ligne{display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer}
+.coche-ligne input{width:20px;height:20px;accent-color:var(--orange);margin:0}
+.frigo-carte a{color:inherit;text-decoration:none}
+.jauge{width:80px;height:8px;border-radius:99px;background:var(--grid);border:1px solid var(--line);overflow:hidden;display:inline-block}
+.jauge i{display:block;height:100%;background:var(--orange)}
+.btn.petit{min-height:36px;padding:6px 12px;font-size:14px;align-self:flex-start;margin-top:4px}
