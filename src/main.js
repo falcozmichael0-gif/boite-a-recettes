@@ -3,6 +3,7 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRe
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { firebaseConfig } from "./config.js";
 import { CATEGORIES, MODELES, retranscrire, testerCle, ErreurRecette } from "./claude.js";
+import { reduire, vignette } from "./photo.js";
 import { ORDRE_RAYONS, AUTRES, ajouterArticle, lireSaisie, libelleQte, texteListe, arrondi, nombre } from "./courses.js";
 
 const $ = s => document.querySelector(s);
@@ -15,7 +16,8 @@ const ecrire = (k, v) => { try { v == null ? localStorage.removeItem(k) : localS
 let auth, db, utilisateur = null;
 let recettes = [], courses = [], recettesChargees = false;
 let filtre = "Toutes", recherche = "", tri = lire("tri") || "date";
-let brouillon = { url: "", texte: "", images: [] };
+let brouillon = { url: "", texte: "", images: [], photo: null };
+let desabonnerPhoto = null;
 let ctl = null, portionsVues = null, recetteVue = null, verrouEcran = null, veutEcran = false;
 let minuterieCourses = null;
 const desabonnements = [];
@@ -64,6 +66,21 @@ async function enregistrerRecette(r) {
   return ref.id;
 }
 
+const docPhoto = id => doc(db, "utilisateurs", utilisateur.uid, "photos", id);
+
+// La grande photo vit dans son propre document (lu seulement sur la fiche) ; la vignette reste dans la recette pour la liste.
+async function enregistrerPhoto(id, fichier) {
+  const [grande, petite] = await Promise.all([reduire(fichier, 1280, 700000), vignette(fichier)]);
+  await setDoc(docPhoto(id), { image: grande });
+  const r = recettes.find(x => x.id === id);
+  if (r) await enregistrerRecette({ ...r, vignette: petite });
+}
+async function retirerPhoto(r) {
+  await deleteDoc(docPhoto(r.id));
+  const { vignette: _, ...reste } = r;
+  await enregistrerRecette(reste);
+}
+
 function sauverCourses() {
   majBadge(); rafraichir();
   clearTimeout(minuterieCourses);
@@ -86,7 +103,7 @@ function route() {
 function afficher() {
   if (!utilisateur) return;
   const { v, id } = route();
-  if (v !== "recette") liberEcran();
+  if (v !== "recette") { liberEcran(); desabonnerPhoto?.(); desabonnerPhoto = null; }
   document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.v === (v === "recette" ? "recettes" : v)));
   ({ recettes: vueRecettes, recette: () => vueRecette(id), ajouter: vueAjouter, courses: vueCourses, reglages: vueReglages })[v]();
   window.scrollTo(0, 0);
@@ -163,10 +180,13 @@ function majListe() {
   if (!recettesChargees) { $("#liste").innerHTML = `<div class="vide">Chargement de vos recettes…</div>`; return; }
   if (!recettes.length) { $("#liste").innerHTML = `<div class="vide">Votre carnet est vide.<br><br><a class="btn plein" href="#ajouter">+ Ajouter une première recette</a><br><br>Vous aviez des recettes dans la version claude.ai ? Importez-les depuis <a href="#reglages">Réglages</a>.</div>`; return; }
   $("#liste").innerHTML = l.length ? l.map(r => `
-    <a class="carte" href="#recette/${esc(r.id)}">
-      <span class="cat">${esc(r.categorie)}${r.favori ? " ★" : ""}</span>
-      <b>${esc(r.titre)}</b>
-      <span class="meta"><span>⏱ ${duree(tempsTotal(r))}</span>${r.portions ? `<span>${r.portions} pers.</span>` : ""}<span>${esc(plateformes[r.plateforme] || "")}</span></span>
+    <a class="carte${r.vignette ? " avec-photo" : ""}" href="#recette/${esc(r.id)}">
+      <span class="txt">
+        <span class="cat">${esc(r.categorie)}${r.favori ? " ★" : ""}</span>
+        <b>${esc(r.titre)}</b>
+        <span class="meta"><span>⏱ ${duree(tempsTotal(r))}</span>${r.portions ? `<span>${r.portions} pers.</span>` : ""}<span>${esc(plateformes[r.plateforme] || "")}</span></span>
+      </span>
+      ${r.vignette ? `<img class="mini" src="${r.vignette}" alt="" loading="lazy">` : ""}
     </a>`).join("") : `<div class="vide">Aucune recette ne correspond.</div>`;
 }
 
@@ -182,6 +202,7 @@ function vueRecette(id) {
     <div class="row"><span class="cat">${esc(r.categorie)}</span><span class="sous">${esc(plateformes[r.plateforme] || "")}</span></div>
     <h1 class="titre">${esc(r.titre)}</h1>
     ${(r.tags || []).length ? `<div class="tags">${r.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
+    ${r.vignette ? `<figure class="polaroid"><img id="photo" src="${r.vignette}" alt="Photo du plat : ${esc(r.titre)}"></figure>` : ""}
     <div class="faits">
       <div class="fait"><b>${duree(r.tempsPreparation)}</b><span>Préparation</span></div>
       <div class="fait"><b>${duree(r.tempsCuisson)}</b><span>Cuisson</span></div>
@@ -190,6 +211,7 @@ function vueRecette(id) {
     </div>
     <div class="row">
       <button class="btn plein" id="versCourses">🛒 Ajouter aux courses</button>
+      <label class="btn discret fichier">📷 ${r.vignette ? "Changer la photo" : "Ajouter une photo"}<input type="file" id="e-photo" accept="image/*"></label>
       ${"wakeLock" in navigator ? `<button class="btn discret" id="ecran" aria-pressed="${veutEcran}">${veutEcran ? "☀️ Écran gardé allumé" : "☀️ Garder l'écran allumé"}</button>` : ""}
     </div>
     <div class="colonnes">
@@ -211,6 +233,7 @@ function vueRecette(id) {
       <div class="field"><label for="e-tags">Étiquettes <span class="hint">(séparées par des virgules)</span></label><input type="text" id="e-tags" value="${esc((r.tags || []).join(", "))}"></div>
       <div class="row">
         <button class="btn" id="e-enreg">Enregistrer</button>
+        ${r.vignette ? `<button class="btn discret" id="e-sansphoto">Retirer la photo</button>` : ""}
         <button class="btn discret" id="e-fav">${r.favori ? "★ Retirer des favoris" : "☆ Favori"}</button>
         <button class="btn danger" id="e-suppr">Supprimer</button>
       </div>
@@ -218,6 +241,16 @@ function vueRecette(id) {
     <p class="statut" id="e-statut"></p>
   </article>`;
 
+  // Grande photo : chargée à part, elle remplace la vignette dès qu'elle arrive (gardée sur l'appareil pour les visites suivantes).
+  desabonnerPhoto?.(); desabonnerPhoto = null;
+  if (r.vignette) desabonnerPhoto = onSnapshot(docPhoto(id), s => { const img = $("#photo"); if (img && s.exists() && s.data().image) img.src = s.data().image; }, () => {});
+  $("#e-photo").onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    toast("Enregistrement de la photo…");
+    try { await enregistrerPhoto(id, f); toast("Photo enregistrée."); } catch (err) { toast("Photo non enregistrée : " + (err.code || err.message)); }
+  };
+  const sansPhoto = $("#e-sansphoto");
+  if (sansPhoto) sansPhoto.onclick = () => retirerPhoto(r).then(() => toast("Photo retirée."), err => toast("Erreur : " + err.code));
   app.querySelector(".colonnes").onclick = e => {
     const b = e.target.closest("[data-p]");
     if (b) { portionsVues = Math.max(1, (portionsVues || 1) + Number(b.dataset.p)); vueRecette(id); }
@@ -243,7 +276,7 @@ function vueRecette(id) {
   $("#e-fav").onclick = () => enregistrerRecette({ ...r, favori: !r.favori }).catch(e => toast("Erreur : " + e.code));
   $("#e-suppr").onclick = async e => {
     if (!e.target.dataset.ok) { e.target.dataset.ok = "1"; e.target.textContent = "Confirmer la suppression"; st.className = "statut"; st.textContent = "Touchez à nouveau pour supprimer définitivement."; return; }
-    await deleteDoc(doc(colRecettes(), r.id)).catch(err => toast("Erreur : " + err.code));
+    await Promise.all([deleteDoc(doc(colRecettes(), r.id)), deleteDoc(docPhoto(r.id))]).catch(err => toast("Erreur : " + err.code));
     location.hash = "#recettes";
   };
 }
@@ -268,6 +301,9 @@ function vueAjouter() {
       <div class="vignettes" id="vignettes"></div>
       <div class="field"><label for="texte">Texte de la publication <span class="hint">(si vous l'avez copié)</span></label>
         <textarea id="texte" placeholder="Collez ici la légende : ingrédients, étapes… emojis et hashtags compris.">${esc(brouillon.texte)}</textarea></div>
+      <div class="field"><span class="lbl">Photo du plat <span class="hint">(facultatif : votre photo, ou une capture de l'image du plat)</span></span>
+        <div class="row"><label class="btn discret fichier">📷 ${brouillon.photo ? "Changer la photo" : "Choisir une photo"}<input type="file" id="photo-plat" accept="image/*"></label>
+        <span id="photo-apercu">${brouillon.photo ? `<img class="mini" src="${URL.createObjectURL(brouillon.photo)}" alt="Photo choisie">` : ""}</span></div></div>
       <div class="field"><label for="url">Lien de la publication <span class="hint">(facultatif)</span></label>
         <input type="url" id="url" placeholder="https://www.instagram.com/…" value="${esc(brouillon.url)}" autocomplete="off"></div>
       <div class="row">
@@ -283,6 +319,7 @@ function vueAjouter() {
   $("#url").oninput = e => { brouillon.url = e.target.value; };
   $("#fichiers").onchange = e => { ajouterImages(e.target.files); e.target.value = ""; };
   $("#vignettes").onclick = e => { const b = e.target.closest("[data-rm]"); if (b) { brouillon.images.splice(Number(b.dataset.rm), 1); majVignettes(); } };
+  $("#photo-plat").onchange = e => { const f = e.target.files[0]; if (f) { brouillon.photo = f; vueAjouter(); } };
   $("#stop").onclick = () => ctl?.abort();
   $("#go").onclick = lancerRetranscription;
 }
@@ -312,7 +349,9 @@ async function lancerRetranscription() {
     const res = await retranscrire({ cle: lire("cle-api"), modele: lire("modele") || "precis", url, texte, images, signal: ctl.signal });
     const r = { ...res, sourceUrl: /^https?:\/\//i.test(url) ? url : "", plateforme: plateforme(url), texteOriginal: texte.slice(0, 6000), favori: false, ajouteLe: new Date().toISOString() };
     const id = await enregistrerRecette(r);
-    brouillon = { url: "", texte: "", images: [] };
+    recettes.push({ id, ...r });
+    if (brouillon.photo) await enregistrerPhoto(id, brouillon.photo).catch(() => toast("Recette enregistrée, mais pas la photo : réessayez depuis la fiche."));
+    brouillon = { url: "", texte: "", images: [], photo: null };
     toast(`« ${r.titre} » rangée dans ${r.categorie}.`);
     location.hash = "#recette/" + id;
   } catch (e) {

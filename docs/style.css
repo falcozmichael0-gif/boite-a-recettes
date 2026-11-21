@@ -145,3 +145,14 @@ details pre{white-space:pre-wrap;font-family:var(--body);font-size:13px;backgrou
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px) + 14px);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:10px;font-weight:700;z-index:30;max-width:calc(100% - 32px);box-shadow:0 8px 18px -8px rgb(0 0 0 / .5)}
 @media (min-width:900px){.toast{bottom:24px}}
 @media (prefers-reduced-motion:no-preference){.toast{animation:monte .2s ease-out}@keyframes monte{from{opacity:0;translate:0 8px}}}
+
+/* photos des plats */
+.carte.avec-photo{display:grid;grid-template-columns:minmax(0,1fr) 68px;gap:12px;align-items:center}
+.carte .txt{display:flex;flex-direction:column;gap:3px;min-width:0}
+img.mini{width:68px;height:68px;object-fit:cover;border-radius:4px;border:3px solid #fff;box-shadow:0 2px 6px -2px rgb(0 0 0 / .35);transform:rotate(2deg)}
+.polaroid{margin:6px auto 4px;background:#fff;padding:10px 10px 30px;box-shadow:0 10px 22px -12px rgb(0 0 0 / .45);transform:rotate(-1.5deg);max-width:min(460px,100%);position:relative}
+.polaroid::before{content:"";position:absolute;top:-12px;left:50%;width:96px;height:26px;translate:-50% 0;rotate:3deg;background:rgb(232 100 43 / .35);border-radius:2px}
+.polaroid img{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:var(--grid)}
+.fichier{position:relative;display:inline-flex;align-items:center;justify-content:center;overflow:hidden}
+.fichier input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.lbl{font-weight:800;font-size:14px}
