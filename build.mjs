@@ -13,5 +13,7 @@ await build({ entryPoints: ["src/main.js"], bundle: true, format: "esm", minify:
   define: { __VERSION_APPLI__: JSON.stringify(infos) } });
 writeFileSync("docs/version.json", JSON.stringify(infos));
 writeFileSync("docs/sw.js", readFileSync("docs/sw.js", "utf8").replace("__VERSION__", version));
+// Adresses versionnées : le navigateur ne peut pas resservir l'ancien app.js ou style.css après une mise à jour.
+writeFileSync("docs/index.html", readFileSync("docs/index.html", "utf8").replace('href="style.css"', `href="style.css?v=${version}"`).replace('src="app.js"', `src="app.js?v=${version}"`));
 writeFileSync("docs/.nojekyll", "");
 console.log("docs/ construit, version", numero, version);

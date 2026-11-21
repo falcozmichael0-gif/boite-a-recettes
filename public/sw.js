@@ -1,11 +1,13 @@
 // Service worker : appli disponible hors connexion + réception du bouton « Partager » d'Android.
 const VERSION = "__VERSION__";
 const CACHE = "boite-" + VERSION;
-const COQUILLE = ["./", "index.html", "app.js", "style.css", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
+// app.js et style.css portent le numéro de version dans leur adresse (voir build.mjs) : une nouvelle version = de nouveaux fichiers.
+const COQUILLE = ["index.html", "app.js?v=" + VERSION, "style.css?v=" + VERSION, "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 const PARTAGE = "boite-partage";
 
 self.addEventListener("install", e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(COQUILLE)).then(() => self.skipWaiting()));
+  // cache: "reload" : on prend les fichiers sur le serveur, jamais dans le cache du navigateur (GitHub Pages le garde 10 min)
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(COQUILLE.map(u => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", e => {
@@ -44,7 +46,7 @@ self.addEventListener("fetch", e => {
     const cache = await caches.open(CACHE);
     const cle = e.request.mode === "navigate" ? "index.html" : e.request;
     const enCache = await cache.match(cle);
-    const reseau = fetch(e.request).then(r => { if (r.ok && e.request.mode !== "navigate") cache.put(e.request, r.clone()); return r; }).catch(() => null);
+    const reseau = fetch(e.request, { cache: "no-cache" }).then(r => { if (r.ok && e.request.mode !== "navigate") cache.put(e.request, r.clone()); return r; }).catch(() => null);
     if (e.request.mode === "navigate") return (await reseau) || enCache;
     return enCache || (await reseau) || new Response("", { status: 504 });
   })());

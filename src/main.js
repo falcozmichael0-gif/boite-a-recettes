@@ -630,7 +630,7 @@ function csv() {
 
 /* ---------- mises à jour ---------- */
 async function versionEnLigne() {
-  try { const r = await fetch("version.json", { cache: "no-store" }); return r.ok ? await r.json() : null; } catch { return null; }
+  try { const r = await fetch("version.json?t=" + Date.now(), { cache: "no-store" }); return r.ok ? await r.json() : null; } catch { return null; }
 }
 // Vide le cache de l'appli (pas les données) et recharge : la nouvelle version est alors téléchargée.
 async function installerMiseAJour() {
@@ -639,7 +639,8 @@ async function installerMiseAJour() {
     await reg?.update().catch(() => {});
     for (const k of await caches.keys()) if (k.startsWith("boite-") && k !== "boite-partage") await caches.delete(k);
   } catch {}
-  location.reload();
+  // adresse unique : la page est redemandée au serveur, avec les fichiers de la nouvelle version
+  location.replace(location.pathname + "?maj=" + Date.now() + location.hash);
 }
 // Au démarrage : si une version plus récente est en ligne, on le signale.
 async function signalerMiseAJour() {
@@ -656,6 +657,7 @@ async function signalerMiseAJour() {
 async function demarrer() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   setTimeout(signalerMiseAJour, 3000);
+  if (new URLSearchParams(location.search).has("maj")) history.replaceState(null, "", location.pathname + location.hash);
   await recupererPartage();
   if (!firebaseConfig) return vueSansConfig();
   const fb = initializeApp(firebaseConfig);
