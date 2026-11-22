@@ -30,15 +30,17 @@ export const nombre = v => nf.format(v);
 
 export function ajouterArticle(liste, { nom, quantite = null, unite = "", de = null }) {
   nom = String(nom || "").trim();
-  if (!nom) return;
+  if (!nom) return null;
   const cle = norm(nom) + "|" + norm(unite);
   const existant = liste.find(c => !c.coche && norm(c.nom) + "|" + norm(c.unite) === cle);
   if (existant) {
     if (quantite != null) existant.quantite = arrondi((existant.quantite || 0) + quantite);
     if (de && !existant.de.includes(de)) existant.de.push(de);
-  } else {
-    liste.push({ id: "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), nom, quantite: quantite == null ? null : arrondi(quantite), unite, rayon: rayonDe(nom), coche: false, de: de ? [de] : [] });
+    return existant;
   }
+  const nouveau = { id: "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), nom, quantite: quantite == null ? null : arrondi(quantite), unite, rayon: rayonDe(nom), coche: false, de: de ? [de] : [] };
+  liste.push(nouveau);
+  return nouveau;
 }
 
 // « 2 l lait » → quantité 2, unité l, nom lait

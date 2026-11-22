@@ -1,5 +1,5 @@
 // Service worker : appli disponible hors connexion + réception du bouton « Partager » d'Android.
-const VERSION = "20261122200557";
+const VERSION = "20261122233410";
 const CACHE = "boite-" + VERSION;
 // app.js et style.css portent le numéro de version dans leur adresse (voir build.mjs) : une nouvelle version = de nouveaux fichiers.
 const COQUILLE = ["index.html", "app.js?v=" + VERSION, "style.css?v=" + VERSION, "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];

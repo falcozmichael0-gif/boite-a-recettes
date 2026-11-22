@@ -192,3 +192,16 @@ img.mini{width:68px;height:68px;object-fit:cover;border-radius:4px;border:3px so
 .pinceaux .chip{background:transparent;color:#fff;border-color:#fff;text-transform:capitalize}
 .pinceaux .chip[aria-pressed="true"]{background:#fff;color:#0C1014}
 .statut-retouche{margin:0;min-height:1.3em;font-size:14px;text-align:center;opacity:.9;max-width:520px}
+
+/* partage : auteurs, nouveautés, membres */
+.nouveau{display:inline-block;background:var(--orange);color:var(--orange-ink);border-radius:4px;padding:0 6px;margin-right:6px;letter-spacing:.04em}
+.auteur{display:flex;align-items:center;gap:8px;margin:0;color:var(--muted);font-size:14px}
+.auteur img,.membres img,.initiale{width:28px;height:28px;border-radius:50%;object-fit:cover;flex:none}
+.initiale{display:inline-grid;place-items:center;background:var(--orange-soft);color:var(--orange);font-weight:800;font-size:14px}
+.membres{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.membres li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.membres img,.membres .initiale{width:36px;height:36px}
+.membres .qui{display:flex;flex-direction:column;min-width:0}
+.membres small{color:var(--muted);overflow-wrap:anywhere}
+.membres .suppr{border:0;background:transparent;color:var(--muted);font-size:20px;min-width:40px;height:40px;border-radius:8px}
+.membres .suppr.confirmer{color:var(--danger);font-size:14px;font-weight:800}

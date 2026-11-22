@@ -1,9 +1,34 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Chaque personne ne voit et ne modifie que ses propres données.
+    function connecte() { return request.auth != null && request.auth.token.email_verified == true; }
+    function monEmail() { return request.auth.token.email.lower(); }
+    // membre d'une boîte = son adresse Google figure dans la liste « emails » de la boîte
+    function membre(boite) {
+      return connecte() && monEmail() in get(/databases/$(database)/documents/boites/$(boite)).data.emails;
+    }
+
+    // Profil de chaque personne (boîte utilisée, nouveautés vues) + anciennes données d'avant le partage
     match /utilisateurs/{uid}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Boîte partagée : seuls ses membres la lisent et la modifient
+    match /boites/{boite} {
+      allow read, update: if membre(boite);
+      allow create: if connecte() && request.resource.data.proprietaire == request.auth.uid
+                    && request.resource.data.emails == [monEmail()];
+      allow delete: if false;
+      match /{document=**} {
+        allow read, write: if membre(boite);
+      }
+    }
+
+    // Invitations : la personne invitée lit la sienne ; les membres d'une boîte invitent vers leur boîte
+    match /invitations/{adresse} {
+      allow get: if connecte() && monEmail() == adresse;
+      allow create, update: if membre(request.resource.data.boite);
+      allow delete: if connecte() && (monEmail() == adresse || membre(resource.data.boite));
     }
   }
 }

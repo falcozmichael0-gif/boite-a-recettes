@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from "firebase/auth";
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, getDoc, getDocs, setDoc, updateDoc, deleteDoc, deleteField, arrayUnion, arrayRemove, writeBatch } from "firebase/firestore";
 import { firebaseConfig } from "./config.js";
 import { CATEGORIES, MODELES, retranscrire, repererTexte, testerCle, ErreurRecette } from "./claude.js";
 import { reduire, vignette, decouper, copierFichier } from "./photo.js";
@@ -24,8 +24,11 @@ let filtre = "Toutes", recherche = "", tri = lire("tri") || "date";
 let brouillon = { url: "", texte: "", images: [], photo: null };
 let desabonnerPhoto = null;
 let ctl = null, portionsVues = null, recetteVue = null, verrouEcran = null, veutEcran = false;
-let minuterieCourses = null;
 const desabonnements = [];
+// Boîte partagée : les recettes et la liste de courses de la maison, ouvertes à plusieurs comptes Google
+let boiteId = null, boite = null, profil = {}, invitationEnAttente = null;
+const monEmail = () => (utilisateur.email || "").toLowerCase();
+const moi = () => ({ nom: utilisateur.displayName || monEmail().split("@")[0], photo: utilisateur.photoURL || "", email: monEmail() });
 
 const plateformes = { facebook: "Facebook", instagram: "Instagram", tiktok: "TikTok", autre: "Autre source" };
 function plateforme(url) {
@@ -48,20 +51,96 @@ function toast(msg) {
 }
 
 /* ---------- données (Firestore) ---------- */
-const colRecettes = () => collection(db, "utilisateurs", utilisateur.uid, "recettes");
-const docCourses = () => doc(db, "utilisateurs", utilisateur.uid, "donnees", "courses");
+// boites/{boite}               : membres (emails autorisés, noms, photos)
+// boites/{boite}/recettes/{id} : recettes ;  photos/{id} : grandes photos ;  donnees/courses : liste de courses
+// utilisateurs/{uid}/donnees/profil : boîte utilisée + ce que la personne a déjà vu (nouveautés)
+// invitations/{email}          : boîte à rejoindre pour cette adresse Google
+const colRecettes = () => collection(db, "boites", boiteId, "recettes");
+const docCourses = () => doc(db, "boites", boiteId, "donnees", "courses");
+const docPhoto = id => doc(db, "boites", boiteId, "photos", id);
+const docBoite = (id = boiteId) => doc(db, "boites", id);
+const docProfil = () => doc(db, "utilisateurs", utilisateur.uid, "donnees", "profil");
+const docInvitation = email => doc(db, "invitations", email);
+
+async function lireDoc(ref) {
+  try { const s = await getDoc(ref); return s.exists() ? s.data() : null; }
+  catch (e) { if (e.code === "permission-denied") return null; throw e; }
+}
+
+// Au démarrage : retrouve la boîte de la personne, rejoint celle où on l'a invitée, ou en crée une.
+async function ouvrirBoite() {
+  profil = (await lireDoc(docProfil())) || {};
+  const invitation = await lireDoc(docInvitation(monEmail())).catch(() => null);
+  if (profil.boite && await lireDoc(docBoite(profil.boite))) boiteId = profil.boite;
+  else if (invitation && await lireDoc(docBoite(invitation.boite))) await changerDeBoite(invitation.boite, false);
+  else boiteId = await creerBoite();
+  invitationEnAttente = invitation && invitation.boite !== boiteId ? invitation : null;
+  await setDoc(docBoite(), { membres: { [utilisateur.uid]: moi() } }, { merge: true }).catch(() => {});   // nom et photo à jour
+}
+
+async function creerBoite() {
+  const ref = doc(collection(db, "boites"));
+  await setDoc(ref, { proprietaire: utilisateur.uid, emails: [monEmail()], membres: { [utilisateur.uid]: moi() }, creee: new Date().toISOString() });
+  boiteId = ref.id;
+  await migrerAnciennesDonnees();
+  profil = { boite: ref.id, vuJusqua: new Date().toISOString(), vues: [] };
+  await setDoc(docProfil(), profil, { merge: true });
+  return ref.id;
+}
+
+// Versions 1.0 à 1.7 : les données étaient rangées par personne. On les recopie dans la boîte (les originaux restent en place).
+async function migrerAnciennesDonnees() {
+  const base = ["utilisateurs", utilisateur.uid];
+  const auteur = { uid: utilisateur.uid, nom: moi().nom };
+  const anciennes = await getDocs(collection(db, ...base, "recettes")).catch(() => null);
+  if (anciennes?.size) {
+    const docs = anciennes.docs;
+    for (let i = 0; i < docs.length; i += 400) {
+      const lot = writeBatch(db);
+      for (const d of docs.slice(i, i + 400)) lot.set(doc(colRecettes(), d.id), { auteur, ...d.data() });
+      await lot.commit();
+    }
+  }
+  const photos = await getDocs(collection(db, ...base, "photos")).catch(() => null);
+  for (const d of photos?.docs || []) await setDoc(docPhoto(d.id), d.data());
+  const anciennesCourses = await lireDoc(doc(db, ...base, "donnees", "courses")).catch(() => null);
+  await setDoc(docCourses(), { articles: versDico(anciennesCourses?.articles) });
+}
+
+// Rejoindre une autre boîte (invitation). copier = recopier d'abord ses propres recettes dans la nouvelle boîte.
+async function changerDeBoite(id, copier) {
+  if (copier && boiteId) {
+    const mes = await getDocs(colRecettes());
+    const photos = await getDocs(collection(db, "boites", boiteId, "photos")).catch(() => null);
+    for (const d of mes.docs) await setDoc(doc(db, "boites", id, "recettes", d.id), d.data());
+    for (const d of photos?.docs || []) await setDoc(doc(db, "boites", id, "photos", d.id), d.data());
+  }
+  boiteId = id;
+  profil = { ...profil, boite: id, vuJusqua: new Date().toISOString(), vues: [] };
+  await setDoc(docProfil(), profil, { merge: true });
+  await setDoc(docBoite(), { membres: { [utilisateur.uid]: moi() } }, { merge: true });
+}
 
 function ecouterDonnees() {
   desabonnements.push(onSnapshot(colRecettes(), snap => {
     recettes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     recettesChargees = true;
-    rafraichir();
+    majBadges(); rafraichir();
   }, e => toast("Synchronisation impossible : " + e.code)));
   desabonnements.push(onSnapshot(docCourses(), snap => {
-    if (minuterieCourses || snap.metadata.hasPendingWrites) return;
-    courses = snap.exists() ? structuredClone(snap.data().articles || []) : [];
-    majBadge(); rafraichir();
-  }));
+    courses = Object.values(versDico(snap.data()?.articles)).map(a => structuredClone(a));
+    majBadges(); rafraichir();
+  }, () => {}));
+  desabonnements.push(onSnapshot(docBoite(), snap => {
+    if (!snap.exists()) return;
+    boite = snap.data();
+    if (route().v === "reglages") majPartage();
+  }, e => { if (e.code === "permission-denied") { toast("Vous n'avez plus accès à cette boîte."); setTimeout(() => location.reload(), 2500); } }));
+  desabonnements.push(onSnapshot(docProfil(), snap => {
+    if (!snap.exists() || snap.metadata.hasPendingWrites) return;
+    profil = { ...profil, ...snap.data() };
+    majBadges(); if (route().v === "recettes") majListe();
+  }, () => {}));
 }
 
 async function enregistrerRecette(r) {
@@ -71,7 +150,27 @@ async function enregistrerRecette(r) {
   return ref.id;
 }
 
-const docPhoto = id => doc(db, "utilisateurs", utilisateur.uid, "photos", id);
+// Qui a ajouté la recette (nom à jour depuis la liste des membres de la boîte)
+function auteurDe(r) {
+  if (!r.auteur?.uid) return null;
+  const m = boite?.membres?.[r.auteur.uid];
+  return { nom: m?.nom || r.auteur.nom || "?", photo: m?.photo || "", moi: r.auteur.uid === utilisateur.uid };
+}
+const prenom = nom => String(nom || "").split(/\s+/)[0];
+
+// Nouveautés : recettes ajoutées par les autres membres depuis ma dernière visite, pas encore ouvertes
+const estNouvelle = r => !!(r.auteur?.uid && r.auteur.uid !== utilisateur.uid && profil.vuJusqua && String(r.ajouteLe) > profil.vuJusqua && !(profil.vues || []).includes(r.id));
+function marquerVue(r) {
+  if (!estNouvelle(r)) return;
+  profil.vues = [...(profil.vues || []), r.id];
+  updateDoc(docProfil(), { vues: arrayUnion(r.id) }).catch(() => {});
+  majBadges();
+}
+function toutMarquerVu() {
+  profil = { ...profil, vuJusqua: new Date().toISOString(), vues: [] };
+  setDoc(docProfil(), { vuJusqua: profil.vuJusqua, vues: [] }, { merge: true }).catch(() => {});
+  filtre = "Toutes"; majBadges(); majListe();
+}
 
 // La grande photo vit dans son propre document (lu seulement sur la fiche) ; la vignette reste dans la recette pour la liste.
 async function enregistrerPhoto(id, fichier) {
@@ -86,18 +185,37 @@ async function retirerPhoto(r) {
   await enregistrerRecette(reste);
 }
 
-function sauverCourses() {
-  majBadge(); rafraichir();
-  clearTimeout(minuterieCourses);
-  minuterieCourses = setTimeout(async () => {
-    try { await setDoc(docCourses(), { articles: courses, maj: new Date().toISOString() }); }
-    catch (e) { toast("Liste non enregistrée : " + e.code); }
-    minuterieCourses = null;
-  }, 500);
+// Liste de courses : un article par champ, pour que deux personnes puissent cocher en même temps sans s'écraser.
+const versDico = a => Array.isArray(a) ? Object.fromEntries(a.map(x => [x.id, x])) : (a || {});
+function ajouterAuxCourses(items) {
+  const touches = items.map(i => ajouterArticle(courses, i)).filter(Boolean);
+  if (!touches.length) return 0;
+  setDoc(docCourses(), { articles: Object.fromEntries(touches.map(a => [a.id, a])) }, { merge: true }).catch(e => toast("Liste non enregistrée : " + e.code));
+  majBadges(); rafraichir();
+  return touches.length;
 }
-function majBadge() {
+function cocherArticle(id, coche) {
+  const a = courses.find(x => x.id === id); if (!a) return;
+  a.coche = coche;
+  setDoc(docCourses(), { articles: { [id]: { coche } } }, { merge: true }).catch(e => toast("Liste non enregistrée : " + e.code));
+  majBadges(); rafraichir();
+}
+function retirerArticles(ids) {
+  if (!ids.length) return;
+  courses = courses.filter(c => !ids.includes(c.id));
+  updateDoc(docCourses(), Object.fromEntries(ids.map(id => [`articles.${id}`, deleteField()]))).catch(e => toast("Liste non enregistrée : " + e.code));
+  majBadges(); rafraichir();
+}
+function viderCourses() {
+  courses = [];
+  setDoc(docCourses(), { articles: {} }).catch(e => toast("Liste non enregistrée : " + e.code));
+  majBadges(); rafraichir();
+}
+function majBadges() {
   const n = courses.filter(c => !c.coche).length;
   $("#badge").hidden = !n; $("#badge").textContent = n;
+  const nv = recettes.filter(estNouvelle).length;
+  $("#badge-nouv").hidden = !nv; $("#badge-nouv").textContent = nv;
 }
 
 /* ---------- routage ---------- */
@@ -177,24 +295,27 @@ function majListe() {
   $("#compte").textContent = recettesChargees ? `${recettes.length} recette${recettes.length > 1 ? "s" : ""}` : "Synchronisation…";
   const nb = {}; recettes.forEach(r => nb[r.categorie] = (nb[r.categorie] || 0) + 1);
   const favs = recettes.filter(r => r.favori).length;
-  const cats = ["Toutes", ...(favs ? ["Favoris"] : []), ...CATEGORIES.filter(c => nb[c]), ...Object.keys(nb).filter(c => !CATEGORIES.includes(c))];
+  const nouv = recettes.filter(estNouvelle).length;
+  const cats = ["Toutes", ...(nouv ? ["Nouveautés"] : []), ...(favs ? ["Favoris"] : []), ...CATEGORIES.filter(c => nb[c]), ...Object.keys(nb).filter(c => !CATEGORIES.includes(c))];
   if (!cats.includes(filtre)) filtre = "Toutes";
-  $("#chips").innerHTML = cats.map(c => `<button class="chip" data-cat="${esc(c)}" aria-pressed="${c === filtre}">${c === "Favoris" ? "★ " : ""}${esc(c)}<small>${c === "Toutes" ? recettes.length : c === "Favoris" ? favs : nb[c]}</small></button>`).join("");
+  $("#chips").innerHTML = cats.map(c => `<button class="chip" data-cat="${esc(c)}" aria-pressed="${c === filtre}">${c === "Favoris" ? "★ " : c === "Nouveautés" ? "🆕 " : ""}${esc(c)}<small>${c === "Toutes" ? recettes.length : c === "Favoris" ? favs : c === "Nouveautés" ? nouv : nb[c]}</small></button>`).join("");
   const q = recherche.trim().toLowerCase();
-  let l = recettes.filter(r => filtre === "Toutes" || (filtre === "Favoris" ? r.favori : r.categorie === filtre));
+  let l = recettes.filter(r => filtre === "Toutes" || (filtre === "Favoris" ? r.favori : filtre === "Nouveautés" ? estNouvelle(r) : r.categorie === filtre));
   if (q) l = l.filter(r => [r.titre, r.categorie, ...(r.tags || []), ...(r.ingredients || []).map(i => i.nom)].join(" ").toLowerCase().includes(q));
   l.sort((a, b) => tri === "titre" ? a.titre.localeCompare(b.titre, "fr") : tri === "temps" ? (tempsTotal(a) || 1e9) - (tempsTotal(b) || 1e9) : String(b.ajouteLe).localeCompare(String(a.ajouteLe)));
   if (!recettesChargees) { $("#liste").innerHTML = `<div class="vide">Chargement de vos recettes…</div>`; return; }
   if (!recettes.length) { $("#liste").innerHTML = `<div class="vide">Votre carnet est vide.<br><br><a class="btn plein" href="#ajouter">+ Ajouter une première recette</a><br><br>Vous aviez des recettes dans la version claude.ai ? Importez-les depuis <a href="#reglages">Réglages</a>.</div>`; return; }
-  $("#liste").innerHTML = l.length ? l.map(r => `
+  const plusieurs = Object.keys(boite?.membres || {}).length > 1;
+  $("#liste").innerHTML = (filtre === "Nouveautés" ? `<button class="btn discret petit" id="tout-vu">✔ Tout marquer comme vu</button>` : "") + (l.length ? l.map(r => `
     <a class="carte${r.vignette ? " avec-photo" : ""}" href="#recette/${esc(r.id)}">
       <span class="txt">
-        <span class="cat">${esc(r.categorie)}${r.favori ? " ★" : ""}</span>
+        <span class="cat">${estNouvelle(r) ? `<span class="nouveau">Nouveau</span>` : ""}${esc(r.categorie)}${r.favori ? " ★" : ""}</span>
         <b>${esc(r.titre)}</b>
-        <span class="meta"><span>⏱ ${duree(tempsTotal(r))}</span>${r.portions ? `<span>${r.portions} pers.</span>` : ""}<span>${esc(plateformes[r.plateforme] || "")}</span></span>
+        <span class="meta"><span>⏱ ${duree(tempsTotal(r))}</span>${r.portions ? `<span>${r.portions} pers.</span>` : ""}${plusieurs && auteurDe(r) ? `<span>par ${esc(auteurDe(r).moi ? "moi" : prenom(auteurDe(r).nom))}</span>` : `<span>${esc(plateformes[r.plateforme] || "")}</span>`}</span>
       </span>
       ${r.vignette ? `<img class="mini" src="${r.vignette}" alt="" loading="lazy">` : ""}
-    </a>`).join("") : `<div class="vide">Aucune recette ne correspond.</div>`;
+    </a>`).join("") : `<div class="vide">Aucune recette ne correspond.</div>`);
+  $("#tout-vu")?.addEventListener("click", toutMarquerVu);
 }
 
 /* ---------- vue : une recette ---------- */
@@ -203,10 +324,13 @@ function vueRecette(id) {
   if (!r) { app.innerHTML = `<section class="view"><a class="retour" href="#recettes">← Mes recettes</a><div class="vide">${recettesChargees ? "Cette recette n'existe plus." : "Chargement…"}</div></section>`; return; }
   if (recetteVue?.id !== id) portionsVues = r.portions || null;
   recetteVue = r;
+  marquerVue(r);
+  const auteur = auteurDe(r);
   const f = r.portions && portionsVues ? portionsVues / r.portions : 1;
   app.innerHTML = `<article class="view">
     <a class="retour" href="#recettes">← Mes recettes</a>
     <div class="row"><span class="cat">${esc(r.categorie)}</span><span class="sous">${esc(plateformes[r.plateforme] || "")}</span></div>
+    ${auteur ? `<p class="auteur">${auteur.photo ? `<img src="${esc(auteur.photo)}" alt="" referrerpolicy="no-referrer">` : `<span class="initiale">${esc(auteur.nom[0] || "?")}</span>`} Ajoutée par ${esc(auteur.moi ? "vous" : auteur.nom)}${r.ajouteLe ? ` le ${new Date(r.ajouteLe).toLocaleDateString("fr-FR")}` : ""}</p>` : ""}
     <h1 class="titre">${esc(r.titre)}</h1>
     ${(r.tags || []).length ? `<div class="tags">${r.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
     ${r.vignette ? `<figure class="polaroid"><img id="photo" src="${r.vignette}" alt="Photo du plat : ${esc(r.titre)}"></figure>` : ""}
@@ -284,9 +408,7 @@ function vueRecette(id) {
   };
   $("#partager").onclick = () => partagerRecette(r, f);
   $("#versCourses").onclick = () => {
-    let n = 0;
-    for (const i of r.ingredients || []) { ajouterArticle(courses, { nom: i.nom, quantite: i.quantite == null ? null : Number(i.quantite) * f, unite: i.unite || "", de: r.titre }); n++; }
-    sauverCourses();
+    const n = ajouterAuxCourses((r.ingredients || []).map(i => ({ nom: i.nom, quantite: i.quantite == null ? null : Number(i.quantite) * f, unite: i.unite || "", de: r.titre })));
     toast(`${n} ingrédient${n > 1 ? "s" : ""} ajouté${n > 1 ? "s" : ""} aux courses${r.portions ? ` (pour ${portionsVues} pers.)` : ""}.`);
   };
   const btnEcran = $("#ecran");
@@ -358,8 +480,7 @@ function vueFrigo() {
   $("#frigo-res").onclick = e => {
     const b = e.target.closest("[data-manque]"); if (!b) return;
     const x = derniersResultats.find(y => y.r.id === b.dataset.manque); if (!x) return;
-    for (const i of x.manquants) ajouterArticle(courses, { nom: i.nom, quantite: i.quantite == null ? null : Number(i.quantite), unite: i.unite || "", de: x.r.titre });
-    sauverCourses();
+    ajouterAuxCourses(x.manquants.map(i => ({ nom: i.nom, quantite: i.quantite == null ? null : Number(i.quantite), unite: i.unite || "", de: x.r.titre })));
     toast(`${x.manquants.length} article${x.manquants.length > 1 ? "s" : ""} ajouté${x.manquants.length > 1 ? "s" : ""} aux courses.`);
   };
   majFrigo();
@@ -457,7 +578,7 @@ async function lancerRetranscription() {
   try {
     const res = await retranscrire({ cle: lire("cle-api"), modele: lire("modele") || "precis", url, texte, images, signal: ctl.signal });
     const { photo: zoneAuto, ...recette } = res;
-    const r = { ...recette, sourceUrl: /^https?:\/\//i.test(url) ? url : "", plateforme: plateforme(url), texteOriginal: texte.slice(0, 6000), favori: false, ajouteLe: new Date().toISOString() };
+    const r = { ...recette, sourceUrl: /^https?:\/\//i.test(url) ? url : "", plateforme: plateforme(url), texteOriginal: texte.slice(0, 6000), favori: false, ajouteLe: new Date().toISOString(), auteur: { uid: utilisateur.uid, nom: moi().nom } };
     const id = await enregistrerRecette(r);
     recettes.push({ id, ...r });
     let message = `« ${r.titre} » rangée dans ${r.categorie}.`;
@@ -511,13 +632,13 @@ function vueCourses() {
       <button class="btn danger" id="vider">Tout vider</button>
     </div>
   </section>`;
-  $("#ajout").onsubmit = e => { e.preventDefault(); const v = $("#saisie").value.trim(); if (!v) return; ajouterArticle(courses, lireSaisie(v)); $("#saisie").value = ""; sauverCourses(); };
-  $("#rayons").onchange = e => { const c = courses.find(x => x.id === e.target.dataset.id); if (c) { c.coche = e.target.checked; sauverCourses(); } };
-  $("#rayons").onclick = e => { const b = e.target.closest("[data-suppr]"); if (b) { courses = courses.filter(x => x.id !== b.dataset.suppr); sauverCourses(); } };
-  $("#retirer").onclick = () => { courses = courses.filter(c => !c.coche); sauverCourses(); };
+  $("#ajout").onsubmit = e => { e.preventDefault(); const v = $("#saisie").value.trim(); if (!v) return; ajouterAuxCourses([lireSaisie(v)]); $("#saisie").value = ""; };
+  $("#rayons").onchange = e => { if (e.target.dataset.id) cocherArticle(e.target.dataset.id, e.target.checked); };
+  $("#rayons").onclick = e => { const b = e.target.closest("[data-suppr]"); if (b) retirerArticles([b.dataset.suppr]); };
+  $("#retirer").onclick = () => retirerArticles(courses.filter(c => c.coche).map(c => c.id));
   $("#vider").onclick = e => {
     if (!e.target.dataset.ok) { e.target.dataset.ok = "1"; e.target.textContent = "Confirmer : tout vider"; return; }
-    courses = []; sauverCourses();
+    viderCourses();
   };
   $("#envoyer").onclick = async () => {
     const txt = texteListe(courses);
@@ -565,6 +686,7 @@ function vueReglages() {
       <div class="row"><button class="btn discret" id="export-json">💾 Sauvegarder (.json)</button><button class="btn discret" id="export-csv">📊 Exporter pour Excel (.csv)</button></div>
       <p class="statut" id="s-statut"></p>
     </div>
+    <div class="carton" id="partage"></div>
     <div class="carton">
       <h2 class="sec">Compte</h2>
       <p>Connecté : <b>${esc(utilisateur.email || utilisateur.displayName || "")}</b></p>
@@ -596,11 +718,57 @@ function vueReglages() {
     st.textContent = `Nouvelle version ${enLigne.numero} trouvée, installation…`;
     await installerMiseAJour();
   };
+  majPartage();
   $("#modele").onchange = e => { ecrire("modele", e.target.value); toast("Réglage enregistré."); };
   $("#import").onchange = e => importer(e.target.files[0]);
   $("#export-json").onclick = () => telecharger("mes-recettes.json", JSON.stringify(recettes, null, 2), "application/json");
   $("#export-csv").onclick = () => telecharger("mes-recettes.csv", csv(), "text/csv;charset=utf-8");
   $("#deco").onclick = () => signOut(auth);
+}
+
+let messagePartage = { classe: "statut", texte: "" };   // survit au rafraîchissement de la carte
+function majPartage() {
+  const zone = $("#partage"); if (!zone || !boite) return;
+  const parEmail = Object.fromEntries(Object.entries(boite.membres || {}).map(([uid, m]) => [m.email, { ...m, uid }]));
+  const proprio = boite.membres?.[boite.proprietaire]?.email;
+  zone.innerHTML = `
+    <h2 class="sec">Partage</h2>
+    ${invitationEnAttente ? `<div class="note">${esc(invitationEnAttente.invitePar || "Quelqu'un")} vous invite à partager sa boîte à recettes.
+      <div class="row" style="margin-top:8px"><button class="btn plein petit" id="rejoindre">Rejoindre (mes recettes y seront copiées)</button></div></div>` : ""}
+    <p class="sous">Les personnes ajoutées se connectent avec leur propre compte Google et partagent avec vous les recettes, les photos et la liste de courses. Elles peuvent tout ajouter, modifier et supprimer.</p>
+    <ul class="membres">${(boite.emails || []).map(e => { const m = parEmail[e]; return `<li>
+      ${m?.photo ? `<img src="${esc(m.photo)}" alt="" referrerpolicy="no-referrer">` : `<span class="initiale">${esc((m?.nom || e)[0].toUpperCase())}</span>`}
+      <span class="qui"><b>${esc(m?.nom || e)}</b>${e === monEmail() ? " (vous)" : ""}<small>${esc(e)}${m ? "" : " · invitation en attente"}${e === proprio ? " · créatrice ou créateur de la boîte" : ""}</small></span>
+      ${e !== monEmail() && e !== proprio ? `<button class="suppr" data-retirer="${esc(e)}" aria-label="Retirer ${esc(e)}">×</button>` : ""}</li>`; }).join("")}</ul>
+    <form class="ajout" id="inviter"><input type="email" id="inv-email" placeholder="adresse Gmail de la personne" aria-label="Adresse Gmail à inviter" autocomplete="off" required><button class="btn plein">Inviter</button></form>
+    <p class="${messagePartage.classe}" id="p-statut">${esc(messagePartage.texte)}</p>`;
+  const st = $("#p-statut");
+  const dire = (classe, texte) => { messagePartage = { classe, texte }; st.className = classe; st.textContent = texte; };
+  $("#inviter").onsubmit = async e => {
+    e.preventDefault();
+    const adr = $("#inv-email").value.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adr)) return dire("statut err", "Adresse e-mail invalide.");
+    if ((boite.emails || []).includes(adr)) return dire("statut", "Cette personne a déjà accès.");
+    try {
+      await updateDoc(docBoite(), { emails: arrayUnion(adr) });
+      await setDoc(docInvitation(adr), { boite: boiteId, invitePar: moi().nom, date: new Date().toISOString() });
+      dire("statut ok", `✔ ${adr} est invité(e). Envoyez-lui le lien de l'appli : ${location.origin + location.pathname} . Il ou elle se connecte avec ce compte Google et retrouve la boîte.`);
+      $("#inv-email").value = "";
+    } catch (err) { dire("statut err", "Invitation impossible (" + err.code + "). Avez-vous bien publié les nouvelles règles Firestore ?"); }
+  };
+  zone.querySelector(".membres").onclick = async e => {
+    const b = e.target.closest("[data-retirer]"); if (!b) return;
+    const adr = b.dataset.retirer;
+    if (!b.dataset.ok) { b.dataset.ok = "1"; b.textContent = "Retirer ?"; b.classList.add("confirmer"); return; }
+    try { await updateDoc(docBoite(), { emails: arrayRemove(adr) }); await deleteDoc(docInvitation(adr)).catch(() => {}); toast(adr + " n'a plus accès."); }
+    catch (err) { toast("Erreur : " + err.code); }
+  };
+  const rj = $("#rejoindre");
+  if (rj) rj.onclick = async () => {
+    rj.disabled = true; rj.textContent = "Copie de vos recettes…";
+    try { await changerDeBoite(invitationEnAttente.boite, true); location.reload(); }
+    catch (err) { rj.disabled = false; rj.textContent = "Rejoindre"; toast("Impossible de rejoindre (" + err.code + ")."); }
+  };
 }
 
 async function importer(fichier) {
@@ -614,7 +782,7 @@ async function importer(fichier) {
     const nouvelles = valides.filter(r => !existants.has(String(r.titre).toLowerCase()));
     for (let i = 0; i < nouvelles.length; i += 400) {
       const lot = writeBatch(db);
-      for (const r of nouvelles.slice(i, i + 400)) { const { id, ...corps } = r; lot.set(id ? doc(colRecettes(), String(id)) : doc(colRecettes()), corps); }
+      for (const r of nouvelles.slice(i, i + 400)) { const { id, ...corps } = r; corps.auteur ||= { uid: utilisateur.uid, nom: moi().nom }; lot.set(id ? doc(colRecettes(), String(id)) : doc(colRecettes()), corps); }
       await lot.commit();
     }
     st.className = "statut ok";
@@ -674,10 +842,18 @@ async function demarrer() {
   auth = getAuth(fb);
   db = initializeFirestore(fb, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
   getRedirectResult(auth).catch(e => vueConnexion("Connexion impossible (" + e.code + ")."));
-  onAuthStateChanged(auth, u => {
+  onAuthStateChanged(auth, async u => {
     desabonnements.splice(0).forEach(f => f());
-    utilisateur = u; recettes = []; courses = []; recettesChargees = false;
+    utilisateur = u; recettes = []; courses = []; recettesChargees = false; boiteId = null; boite = null;
     if (!u) return vueConnexion();
+    app.innerHTML = `<div class="accueil"><h1 class="titre">Ma Boîte <span class="o">à</span> Recettes</h1><p class="sous">Ouverture de votre boîte…</p></div>`;
+    try { await ouvrirBoite(); }
+    catch (e) {
+      app.innerHTML = `<div class="accueil"><h1 class="titre">Ma Boîte <span class="o">à</span> Recettes</h1>
+        <p class="note">Impossible d'ouvrir votre boîte (${esc(e.code || e.message)}).${e.code === "unavailable" ? " Vérifiez votre connexion à Internet." : e.code === "permission-denied" ? " Les règles Firestore ne sont peut-être pas à jour." : ""}</p>
+        <button class="btn" onclick="location.reload()">Réessayer</button></div>`;
+      return;
+    }
     $("#nav").hidden = false;
     ecouterDonnees();
     afficher();
