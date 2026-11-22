@@ -2,9 +2,10 @@ import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from "firebase/auth";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { firebaseConfig } from "./config.js";
-import { CATEGORIES, MODELES, retranscrire, testerCle, ErreurRecette } from "./claude.js";
+import { CATEGORIES, MODELES, retranscrire, repererTexte, testerCle, ErreurRecette } from "./claude.js";
 import { reduire, vignette, decouper, copierFichier } from "./photo.js";
 import { recadrer } from "./recadrage.js";
+import { retoucher } from "./retouche.js";
 import { lireFrigo, classer, sansPrecision } from "./frigo.js";
 import { ORDRE_RAYONS, AUTRES, ajouterArticle, lireSaisie, libelleQte, texteListe, arrondi, nombre } from "./courses.js";
 
@@ -240,7 +241,7 @@ function vueRecette(id) {
       <div class="field"><label for="e-tags">Étiquettes <span class="hint">(séparées par des virgules)</span></label><input type="text" id="e-tags" value="${esc((r.tags || []).join(", "))}"></div>
       <div class="row">
         <button class="btn" id="e-enreg">Enregistrer</button>
-        ${r.vignette ? `<button class="btn discret" id="e-recadrer">✂️ Recadrer la photo</button><button class="btn discret" id="e-sansphoto">Retirer la photo</button>` : ""}
+        ${r.vignette ? `<button class="btn discret" id="e-recadrer">✂️ Recadrer la photo</button><button class="btn discret" id="e-gomme">🧽 Effacer du texte</button><button class="btn discret" id="e-sansphoto">Retirer la photo</button>` : ""}
         <button class="btn discret" id="e-fav">${r.favori ? "★ Retirer des favoris" : "☆ Favori"}</button>
         <button class="btn danger" id="e-suppr">Supprimer</button>
       </div>
@@ -265,6 +266,15 @@ function vueRecette(id) {
     const actuelle = new File([await (await fetch(src)).blob()], "photo.jpg", { type: "image/jpeg" });
     const zone = await recadrer(actuelle); if (!zone) return;
     try { await enregistrerPhoto(id, await decouper(actuelle, zone)); toast("Photo recadrée."); } catch (err) { toast("Photo non enregistrée : " + (err.code || err.message)); }
+  };
+  const btnGomme = $("#e-gomme");
+  if (btnGomme) btnGomme.onclick = async () => {
+    const src = $("#photo")?.src; if (!src) return;
+    const actuelle = new File([await (await fetch(src)).blob()], "photo.jpg", { type: "image/jpeg" });
+    const cle = lire("cle-api");
+    const detecter = cle ? image => repererTexte({ cle, modele: lire("modele") || "precis", image }) : null;
+    const retouchee = await retoucher(actuelle, { detecter }); if (!retouchee) return;
+    try { await enregistrerPhoto(id, retouchee); toast("Photo retouchée."); } catch (err) { toast("Photo non enregistrée : " + (err.code || err.message)); }
   };
   const sansPhoto = $("#e-sansphoto");
   if (sansPhoto) sansPhoto.onclick = () => retirerPhoto(r).then(() => toast("Photo retirée."), err => toast("Erreur : " + err.code));

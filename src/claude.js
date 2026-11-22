@@ -158,6 +158,36 @@ function zonePhoto(p, nbImages) {
   return { capture: i, x: g, y: h, w: d - g, h: b - h };
 }
 
+// Repère le texte incrusté sur une photo de plat (titres, numéros, noms de compte…) pour la gomme à texte.
+// Renvoie des zones {x, y, w, h} en fractions de l'image.
+export async function repererTexte({ cle, modele, image, signal }) {
+  const m = MODELES[modele] || MODELES.precis;
+  const schema = {
+    type: "object", additionalProperties: false, required: ["zones"],
+    properties: { zones: { type: "array", items: { type: "object", additionalProperties: false, required: ["gauche", "haut", "droite", "bas"],
+      properties: { gauche: { type: "number" }, haut: { type: "number" }, droite: { type: "number" }, bas: { type: "number" } } } } },
+  };
+  const params = {
+    model: m.id, max_tokens: 4000,
+    messages: [{ role: "user", content: [
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: await imageEnBase64(image) } },
+      { type: "text", text: "Sur cette photo de plat, repère tout texte ajouté par-dessus l'image : titres, sous-titres, numéros, noms de compte, filigranes, logos, émojis. Ignore le texte qui fait naturellement partie de la scène (étiquette d'un produit, inscription sur un objet). Pour chaque bloc de texte, donne un cadre serré : « gauche », « haut », « droite », « bas » en fractions de la largeur et de la hauteur de l'image (0 = bord gauche ou haut, 1 = bord droit ou bas). Liste vide s'il n'y a pas de texte ajouté." },
+    ] }],
+    output_config: { effort: "low", format: { type: "json_schema", schema } },
+  };
+  if (m.id === "claude-opus-5-5") { params.betas = ["server-side-fallback-2026-07-01"]; params.fallbacks = "default"; }
+  let rep;
+  try { rep = await client(cle).beta.messages.create(params, { signal }); }
+  catch (e) { throw new ErreurRecette(messageErreur(e)); }
+  if (rep.stop_reason === "refusal") throw new ErreurRecette("Claude n'a pas pu analyser cette photo.");
+  let r;
+  try { r = JSON.parse(rep.content.filter(b => b.type === "text").map(b => b.text).join("")); } catch { throw new ErreurRecette("Réponse illisible. Réessayez."); }
+  return (r.zones || []).map(z => {
+    const g = Math.max(0, Number(z.gauche)), h = Math.max(0, Number(z.haut)), d = Math.min(1, Number(z.droite)), b = Math.min(1, Number(z.bas));
+    return { x: g, y: h, w: d - g, h: b - h };
+  }).filter(z => [z.x, z.y, z.w, z.h].every(Number.isFinite) && z.w > 0.005 && z.h > 0.005 && z.w * z.h < 0.6);
+}
+
 // Petit appel pour vérifier une clé depuis les réglages.
 export async function testerCle(cle) {
   try {
